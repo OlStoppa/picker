@@ -1,271 +1,461 @@
-/* eslint-disable no-console */
-/* eslint-disable no-console */
 <template>
-  <div class="datepicker-col-1">
+  <div class="smooth-picker flex-box">
+    <!-- smooth-group-layer -->
     <div
-      class="datepicker-viewport"
-      @touchstart="handleContentTouch"
-      @touchmove="handleContentTouch"
-      @touchend="handleContentTouch"
-      @mousedown="handleContentMouseDown"
-      @mousemove="handleContentMouseMove"
-      @mouseup="handleContentMouseUp"
+      ref="smoothGroup"
+      v-for="(group, gIndex) in data"
+      :key="gIndex"
+      class="smooth-group"
+      :class="getGroupClass(gIndex)"
     >
-      <div class="datepicker-wheel">
-        <ul class="datepicker-scroll" :style="Y">
-          <li v-for="(date, idx) in dates" :key="idx">{{renderDatePicker(date)}}</li>
-        </ul>
+      <div class="smooth-list">
+        <div
+          v-if="group.divider"
+          class="smooth-item divider"
+          :class="getItemClass(gIndex, iIndex, true)"
+        >
+          {{ group.text }}
+        </div>
+
+        <div
+          v-else
+          v-for="(item, iIndex) in group.list"
+          :key="iIndex"
+          class="smooth-item"
+          :class="getItemClass(gIndex, iIndex)"
+          :style="getItemStyle(gIndex, iIndex)"
+        >
+          {{ item.value || item }}
+        </div>
       </div>
+    </div>
+
+    <div
+      ref="smoothHandleLayer"
+      class="smooth-handle-layer flex-box direction-column"
+    >
+      <div data-type="top" class="smooth-top flex-1"></div>
+      <div data-type="middle" class="smooth-middle"></div>
+      <div data-type="bottom" class="smooth-bottom flex-1"></div>
     </div>
   </div>
 </template>
+
 <script>
-import * as TimeUtil from "../time";
-const DATE_HEIGHT = 40;
-const DATE_LENGTH = 10;
-const MIDDLE_INDEX = Math.floor(DATE_LENGTH / 2);
-const MIDDLE_Y = -DATE_HEIGHT * MIDDLE_INDEX;
 export default {
   props: {
-    item: {
-      type: Object,
-      default: () => ({})
+    data: {
+      type: Array,
+      default: () => {
+        [];
+      }
     },
-    date: {
-      type: Date,
-      default: new Date()
-    },
-    min: {
-      type: Date,
-      default: 0
-    },
-    max: {
-      type: Date,
-      default: 0
+    change: {
+      type: Function,
+      default: () => {}
     }
   },
   data() {
     return {
-      animating: false,
-      touchY: 0,
-      translateY: MIDDLE_Y,
-      currentIndex: MIDDLE_INDEX,
-      moveDateCount: 0,
-      dates: []
+      gIndex: 0, // for suppress vue-loader warning
+      iIndex: 0, // for suppress vue-loader warning
+      currentIndexList: this.getInitialCurrentIndexList(), // save groups's index
+      lastCurrentIndexList: [], // for detect which group's current index if it is changed
+      groupsRectList: new Array(this.data.length), // save the dom rect list of this picker's groups
+      dragInfo: {
+        // save drag(ing) info
+        isTouchable: 'ontouchstart' in window, // for detect event belongs to touch or mouse
+        isMouseDown: false, // save the status of mouse (touch) is start and it is not end
+        isDragging: false, // for detect the status of mouse (touch) is dragging (moving) after isMouseDown or not
+        groupIndex: null, // save which group is dragging now
+        startPageY: null // save the pageY value of mouse (touch) after begin isMouseDown
+      },
+      supInfo: {
+        // supporting for picker usefulness
+        getRectTimeoutId: null, // save timeout id
+        lastStyleDisplay: null, // for detect picker style display if it is changed
+        watchDomObserver: null // for watching this picker dom
+      }
     };
   },
-  watch: {
-    date: function(newDate) {
-      // eslint-disable-next-line no-console
-      console.log(newDate);
-      if (newDate.getTime() === this.date.getTime()) {
-        return;
-      }
-      this._iniDates(newDate);
-      this.currentIndex = MIDDLE_INDEX;
-    }
-  },
   mounted() {
-    this._iniDates(this.date);
+    this.eventsRegister();
+    this.$nextTick(this.getGroupsRectList());
+    this.supInfo.watchDomObserver = this.createDomObserver();
+    this.supInfo.watchDomObserver.observe(this.$el, { attributes: true });
+    window.addEventListener('resize', this.safeGetGroupRectList);
   },
-  computed: {
-    marginTop() {
-      return (this.currentIndex - MIDDLE_INDEX) * DATE_HEIGHT;
-    },
-    Y() {
-      return {
-        transform: `translateY(${this.translateY}px)`,
-        marginTop: this.marginTop
-      };
-    }
+  destroyed() {
+    this.supInfo.watchDomObserver.disconnect();
+    window.removeEventListener('resize', this.safeGetGroupRectList);
   },
   methods: {
-    _iniDates(date) {
-      // eslint-disable-next-line no-console
-      // console.log(date);
-      const typeName = this.item.type;
-      const dates = Array(...Array(DATE_LENGTH)).map((value, index) =>
-        TimeUtil[`next${typeName}`](
-          date,
-          (index - MIDDLE_INDEX) * this.item.step
-        )
-      );
-      this.dates = dates;
-    },
-    renderDatePicker(date) {
-      // const className =
-      //     (date < this.props.min || date > this.props.max) ?
-      //     'disabled' : '';
-
-      let formatDate;
-
-      formatDate = TimeUtil.convertDate(date, this.item.format);
-      // eslint-disable-next-line no-console
-      // console.log(date, formatDate);
-      return formatDate;
-    },
-    handleContentTouch() {
-      event.preventDefault();
-      if (this.animating) return;
-      if (event.type === "touchstart") {
-        this.handleStart(event);
-      } else if (event.type === "touchmove") {
-        this.handleMove(event);
-      } else if (event.type === "touchend") {
-        this.handleEnd(event);
+    setGroupData(gIndex, groupData) {
+      // for current index list
+      const iCI = groupData.currentIndex;
+      let movedIndex = 0;
+      if (
+        typeof iCI === 'number' &&
+        iCI >= 0 &&
+        groupData.list &&
+        groupData.list.length &&
+        iCI <= groupData.list.length - 1
+      ) {
+        movedIndex = Math.round(iCI);
       }
-    },
-    handleEnd(event) {
-      const touchY = event.pageY || event.changedTouches[0].pageY;
-      const dir = touchY - this.touchY;
-      const direction = dir > 0 ? -1 : 1;
-      this._moveToNext(direction);
-    },
-    handleStart() {
-      this.touchY =
-        event.targetTouches && event.targetTouches[0]
-          ? event.targetTouches[0].pageY
-          : event.pageY;
-
-      this.translateY = this.translateY;
-      this.moveDateCount = 0;
-    },
-
-    handleMove(event) {
-      const touchY =
-        event.targetTouches && event.targetTouches[0]
-          ? event.targetTouches[0].pageY
-          : event.pageY;
-
-      const dir = touchY - this.touchY;
-      const translateY = this.translateY + dir;
-      const direction = dir > 0 ? -1 : 1;
-
-      // 日期最小值，最大值限制
-      const date = this.dates[MIDDLE_INDEX];
-      const { max, min } = this;
-      if (date.getTime() < min.getTime() || date.getTime() > max.getTime()) {
-        return;
+      this.currentIndexList[gIndex] = movedIndex;
+      this.lastCurrentIndexList = [].concat(this.currentIndexList);
+      // for detect group flex if changed
+      const gF = groupData.flex;
+      if (gF && this.data[gIndex].flex !== gF) {
+        this.safeGetGroupRectList();
       }
-
-      // 检测是否更新日期列表
-      if (this._checkIsUpdateDates(direction, translateY)) {
-        this.moveDateCount =
-          direction > 0 ? this.moveDateCount + 1 : this.moveDateCount - 1;
-        this._updateDates(direction);
-      }
-
-      this.translateY = translateY;
+      // set group data
+      this.$set(this.data, gIndex, groupData);
     },
-    _updateDates(direction) {
-      const typeName = this.item.type;
-      let { dates } = this;
-      if (direction === 1) {
-        this.currentIndex++;
-
-        dates = [
-          ...dates.slice(1),
-          TimeUtil[`next${typeName}`](dates[dates.length - 1], this.item.step)
-        ];
-      } else {
-        this.currentIndex--;
-
-        this.dates = [
-          TimeUtil[`next${typeName}`](dates[0], -this.item.step),
-          ...dates.slice(0, dates.length - 1)
-        ];
-      }
+    getInitialCurrentIndexList() {
+      return this.data.map(item => {
+        const iCI = item.currentIndex;
+        if (
+          typeof iCI === 'number' &&
+          iCI >= 0 &&
+          item.list &&
+          item.list.length &&
+          iCI <= item.list.length - 1
+        ) {
+          return Math.round(iCI);
+        }
+        return 0;
+      });
     },
-    _checkIsUpdateDates(direction, translateY) {
-      return direction === 1
-        ? this.currentIndex * DATE_HEIGHT + DATE_HEIGHT / 2 < -translateY
-        : this.currentIndex * DATE_HEIGHT - DATE_HEIGHT / 2 > -translateY;
+    createDomObserver() {
+      return new window.MutationObserver(mutations => {
+        mutations.forEach(mutation => {
+          if (mutation.type === 'attributes') {
+            // for get correct rect list after v-show true (when $el style display not none)
+            const elDisplay = this.$el.style.display;
+            if (
+              elDisplay !== 'none' &&
+              this.supInfo.lastStyleDisplay !== elDisplay
+            ) {
+              this.supInfo.lastStyleDisplay = elDisplay;
+              this.$nextTick(this.getGroupsRectList());
+            }
+          }
+        });
+      });
     },
-    handleContentMouseUp() {},
-    handleContentMouseDown(event) {
-      if (this.animating) return;
-      this.handleStart(event);
-    },
-    handleContentMouseMove() {
-      if (this.animating) return;
-      this.handleMove(event);
-    },
-    _moveTo(currentIndex) {
-      this.animating = true;
-
-      // addPrefixCss(this.refs.scroll, { transition: 'transform .2s ease-out' });
-
-      this.translateY = -currentIndex * DATE_HEIGHT;
-
-      // NOTE: There is no transitionend, setTimeout is used instead.
-      this._moveToTimer = setTimeout(() => {
-        this.animating = false;
-        this.$emit("onSelect", this.dates[MIDDLE_INDEX]);
-        this._clearTransition(this.$refs.scroll);
+    safeGetGroupRectList() {
+      this.supInfo.getRectTimeoutId &&
+        clearTimeout(this.supInfo.getRectTimeoutId);
+      this.supInfo.getRectTimeoutId = setTimeout(() => {
+        this.getGroupsRectList();
       }, 200);
     },
-    _moveToNext(direction) {
-      const date = this.dates[MIDDLE_INDEX];
-      const { max, min } = this;
-      if (
-        direction === -1 &&
-        date.getTime() < min.getTime() &&
-        this.moveDateCount
-      ) {
-        this._updateDates(1);
-      } else if (
-        direction === 1 &&
-        date.getTime() > max.getTime() &&
-        this.moveDateCount
-      ) {
-        this._updateDates(-1);
+    getGroupsRectList() {
+      if (this.$refs.smoothGroup) {
+        this.$refs.smoothGroup.forEach((item, index) => {
+          this.groupsRectList[index] = item.getBoundingClientRect();
+        });
       }
-
-      this._moveTo(this.currentIndex);
+    },
+    eventsRegister() {
+      const handleEventLayer = this.$refs.smoothHandleLayer;
+      if (handleEventLayer) {
+        this.addEventsForElement(handleEventLayer);
+      }
+    },
+    addEventsForElement(el) {
+      const _ = this.dragInfo.isTouchable;
+      const eventHandlerList = [
+        { name: _ ? 'touchstart' : 'mousedown', handler: this.handleStart },
+        { name: _ ? 'touchmove' : 'mousemove', handler: this.handleMove },
+        { name: _ ? 'touchend' : 'mouseup', handler: this.handleEnd },
+        { name: _ ? 'touchcancel' : 'mouseleave', handler: this.handleCancel }
+      ];
+      eventHandlerList.forEach(item => {
+        el.removeEventListener(item.name, item.handler, false);
+        el.addEventListener(item.name, item.handler, false);
+      });
+    },
+    triggerMiddleLayerGroupClick(gIndex) {
+      const data = this.data;
+      if (
+        typeof gIndex === 'number' &&
+        typeof data[gIndex].onClick === 'function'
+      ) {
+        data[gIndex].onClick(gIndex, this.currentIndexList[gIndex]);
+      }
+    },
+    triggerAboveLayerClick(ev, gIndex) {
+      const movedIndex = this.currentIndexList[gIndex] + 1;
+      this.$set(this.currentIndexList, gIndex, movedIndex);
+      this.correctionCurrentIndex(ev, gIndex);
+    },
+    triggerMiddleLayerClick(ev, gIndex) {
+      this.triggerMiddleLayerGroupClick(gIndex);
+    },
+    triggerBelowLayerClick(ev, gIndex) {
+      const movedIndex = this.currentIndexList[gIndex] - 1;
+      this.$set(this.currentIndexList, gIndex, movedIndex);
+      this.correctionCurrentIndex(ev, gIndex);
+    },
+    getTouchInfo(ev) {
+      return this.dragInfo.isTouchable
+        ? ev.changedTouches[0] || ev.touches[0]
+        : ev;
+    },
+    getGroupIndexBelongsEvent(ev) {
+      const touchInfo = this.getTouchInfo(ev);
+      for (let i = 0; i < this.groupsRectList.length; i++) {
+        const item = this.groupsRectList[i];
+        if (item.left < touchInfo.pageX && touchInfo.pageX < item.right) {
+          return i;
+        }
+      }
+      return null;
+    },
+    handleEventClick(ev) {
+      const gIndex = this.getGroupIndexBelongsEvent(ev);
+      switch (ev.target.dataset.type) {
+        case 'top':
+          this.triggerAboveLayerClick(ev, gIndex);
+          break;
+        case 'middle':
+          this.triggerMiddleLayerClick(ev, gIndex);
+          break;
+        case 'bottom':
+          this.triggerBelowLayerClick(ev, gIndex);
+          break;
+        default:
+      }
+    },
+    handleStart(ev) {
+      if (ev.cancelable) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      const touchInfo = this.getTouchInfo(ev);
+      this.dragInfo.startPageY = touchInfo.pageY;
+      if (!this.dragInfo.isTouchable) {
+        this.dragInfo.isMouseDown = true;
+      }
+    },
+    handleMove(ev) {
+      if (ev.cancelable) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (this.dragInfo.isTouchable || this.dragInfo.isMouseDown) {
+        this.dragInfo.isDragging = true;
+        this.setCurrentIndexOnMove(ev);
+      }
+    },
+    handleEnd(ev) {
+      if (ev.cancelable) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (!this.dragInfo.isDragging) {
+        this.handleEventClick(ev);
+      }
+      this.dragInfo.isDragging = false;
+      this.dragInfo.isMouseDown = false;
+      this.correctionAfterDragging(ev);
+    },
+    handleCancel(ev) {
+      if (ev.cancelable) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (this.dragInfo.isTouchable || this.dragInfo.isMouseDown) {
+        this.correctionAfterDragging(ev);
+        this.dragInfo.isMouseDown = false;
+        this.dragInfo.isDragging = false;
+      }
+    },
+    setCurrentIndexOnMove(ev) {
+      const touchInfo = this.getTouchInfo(ev);
+      if (this.dragInfo.groupIndex === null) {
+        this.dragInfo.groupIndex = this.getGroupIndexBelongsEvent(ev);
+      }
+      const gIndex = this.dragInfo.groupIndex;
+      if (
+        typeof gIndex === 'number' &&
+        (this.data[gIndex].divider || !this.data[gIndex].list)
+      ) {
+        return;
+      }
+      const moveCount = (this.dragInfo.startPageY - touchInfo.pageY) / 32;
+      const movedIndex = this.currentIndexList[gIndex] + moveCount;
+      this.$set(this.currentIndexList, gIndex, movedIndex);
+      this.dragInfo.startPageY = touchInfo.pageY;
+    },
+    correctionAfterDragging(ev) {
+      const gIndex = this.dragInfo.groupIndex;
+      this.correctionCurrentIndex(ev, gIndex);
+      this.dragInfo.groupIndex = null;
+      this.dragInfo.startPageY = null;
+    },
+    correctionCurrentIndex(ev, gIndex) {
+      setTimeout(() => {
+        if (
+          typeof gIndex === 'number' &&
+          this.data[gIndex].divider !== true &&
+          this.data[gIndex].list.length > 0
+        ) {
+          const unsafeGroupIndex = this.currentIndexList[gIndex];
+          let movedIndex = unsafeGroupIndex;
+          if (unsafeGroupIndex > this.data[gIndex].list.length - 1) {
+            movedIndex = this.data[gIndex].list.length - 1;
+          } else if (unsafeGroupIndex < 0) {
+            movedIndex = 0;
+          }
+          movedIndex = Math.round(movedIndex);
+          this.$set(this.currentIndexList, gIndex, movedIndex);
+          if (movedIndex !== this.lastCurrentIndexList[gIndex]) {
+            this.change(gIndex, movedIndex);
+          }
+          this.lastCurrentIndexList = [].concat(this.currentIndexList);
+        }
+      }, 100);
+    },
+    isCurrentItem(gIndex, iIndex) {
+      return this.currentIndexList[gIndex] === iIndex;
+    },
+    getCurrentIndexList() {
+      return this.currentIndexList;
+    },
+    getGroupClass(gIndex) {
+      const group = this.data[gIndex];
+      const defaultFlexClass = 'flex-' + (group.flex || 1);
+      const groupClass = [defaultFlexClass];
+      if (group.className) {
+        groupClass.push(group.className);
+      }
+      return groupClass;
+    },
+    getItemClass(gIndex, iIndex, isDevider = false) {
+      const itemClass = [];
+      const group = this.data[gIndex];
+      if (group.textAlign) {
+        itemClass.push('text-' + group.textAlign);
+      }
+      if (!isDevider && this.isCurrentItem(gIndex, iIndex)) {
+        itemClass.push('smooth-item-selected');
+      }
+      return itemClass;
+    },
+    getItemStyle(gIndex, iIndex) {
+      const gapCount = this.currentIndexList[gIndex] - iIndex;
+      if (Math.abs(gapCount) < 4) {
+        let rotateStyle =
+          'transform: rotateX(' +
+          gapCount * 23 +
+          'deg) translate3d(0, 0, 5.625em);';
+        if (!this.dragInfo.isDragging) {
+          rotateStyle += ' transition: transform 150ms ease-out;';
+        }
+        return rotateStyle;
+      }
+      if (gapCount > 0) {
+        return 'transform: rotateX(100deg) translate3d(0, 0, 5.625em)';
+      } else {
+        return 'transform: rotateX(-100deg) translate3d(0, 0, 5.625em)';
+      }
     }
   }
 };
 </script>
-<style lang="less" scoped>
-.datepicker-col-1 {
-  flex: 1;
-  margin: 0 0.25em;
+
+<style lang="stylus" scoped>
+r(val) {
+  (val / 16) * 1em;
 }
 
-.datepicker-viewport {
-  height: 200px;
+$smoothPickerHeight = 160;
+$smoothMiddleLayerHeight = 32;
+
+.smooth-picker {
+  font-size: 1rem;
+  height: r($smoothPickerHeight);
   position: relative;
+  background-color: white;
   overflow: hidden;
-  &::after {
-    content: "";
+
+  .smooth-group {
+    //
+  }
+
+  .smooth-list {
+    height: r(100);
+    position: relative;
+    top: r($smoothPickerHeight / 2 - $smoothMiddleLayerHeight / 2); // half of picker height - half of item height
+  }
+
+  .smooth-item {
     position: absolute;
-    z-index: 2;
     top: 0;
-    right: 0;
-    bottom: 0;
     left: 0;
-    pointer-events: none;
+    overflow: hidden;
+    width: 100%;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
+    text-align: center;
+    will-change: transform;
+    contain: strict;
+    height: r(32);
+    line-height: 2;
+    font-size: r(16);
+  }
+
+  .selected-item {
+    //
+  }
+
+  .smooth-handle-layer {
+    position: absolute;
+    width: 100%;
+    height: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    top: -1px;
+    bottom: -1px;
+
+    .smooth-top {
+      border-bottom: 1px solid #c8c7cc;
+      background: linear-gradient(to bottom, white 10%, rgba(255, 255, 255, 0.7) 100%);
+      transform: translate3d(0, 0, 5.625em);
+    }
+
+    .smooth-middle {
+      height: r($smoothMiddleLayerHeight);
+    }
+
+    .smooth-bottom {
+      border-top: 1px solid #c8c7cc;
+      background: linear-gradient(to top, white 10%, rgba(255, 255, 255, 0.7) 100%);
+      transform: translate3d(0, 0, 5.625em);
+    }
   }
 }
 
-.datepicker-wheel {
-  position: absolute;
-  height: 40px;
-  top: 50%;
-  margin-top: -20px;
-  width: 100%;
-  border-top: 1px solid #4eccc4;
-  border-bottom: 1px solid #4eccc4;
-}
+/* flex system */
+.flex-box {
+  display: flex;
 
-.datepicker-scroll {
-  list-style-type: none;
-  padding: 0;
-  & > li {
-    height: 40px;
-    line-height: 40px;
-    font-size: 1.375em;
-    cursor: pointer;
+  for prop in column row {
+    &.direction-{prop} {
+      flex-direction: prop;
+    }
+  }
+
+  /* for items */
+  for n in 1 .. 12 {
+    .flex-{n} {
+      flex: n;
+    }
   }
 }
 </style>

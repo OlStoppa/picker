@@ -1,112 +1,124 @@
 <template>
-  <div class="datepicker">
-    <div class="datepicker-header"></div>
-    <div class="datepicker-content">
-      <DatePickerItem
-        v-for="(col, idx) in defaultProps.dateConfig"
-        :key="idx"
-        :item="col"
-        :date="defaultProps.value"
-        :max="defaultProps.max"
-        :min="defaultProps.min"
-        @onSelect="onSelectDate"
-      />
-    </div>
-    <div class="datepicker-navbar">
-      <div class="datepicker-navbar-btn">{{defaultProps.confirmText}}</div>
-      <div class="datepicker-navbar-btn">{{defaultProps.cancelText}}</div>
-    </div>
+  <div class="example-page">
+    <smoothPicker ref="smoothPicker" :data="data" :change="dataChange" />
+    <button class="button" type="button" @click="confirm">Confirm</button>
   </div>
 </template>
+
 <script>
-import DatePickerItem from "./DatePickerItem.vue";
-const defaultProps = {
-  isPopup: true,
-  isOpen: false,
-  theme: "default",
-  value: new Date(),
-  min: new Date(1970, 0, 1),
-  max: new Date(2050, 0, 1),
-  showFooter: true,
-  showHeader: true,
-  showCaption: false,
-  dateConfig: {
-    year: {
-      format: "YYYY",
-      caption: "Year",
-      step: 1,
-      type: "Year"
-    },
-    month: {
-      format: "M",
-      caption: "Mon",
-      step: 1,
-      type: "Month"
-    },
-    date: {
-      format: "D",
-      caption: "Day",
-      step: 1,
-      type: "Date"
-    }
-  },
-  headerFormat: "YYYY/MM/DD",
-  confirmText: "完成",
-  cancelText: "取消"
-};
+import smoothPicker from './DatePickerItem.vue';
 export default {
   components: {
-    DatePickerItem
+    smoothPicker
   },
   data() {
+    const nowYear = new Date().getFullYear();
+    const years = [];
+    for (let i = 1991; i <= nowYear; i++) {
+      years.push(i);
+    }
     return {
-      confirmText: "OK",
-      cancelText: "Cancel",
-      defaultProps
+      data: [
+        {
+          currentIndex: parseInt((nowYear - 1991) / 2),
+          flex: 3,
+          list: years,
+          textAlign: 'center',
+          className: 'row-group'
+        },
+        {
+          currentIndex: 8,
+          flex: 3,
+          list: [...Array(12)].map((m, i) => i + 1),
+          textAlign: 'center',
+          className: 'row-group'
+        },
+        {
+          currentIndex: 1,
+          flex: 3,
+          list: [...Array(30)].map((d, i) => i + 1),
+          onClick: this.clickOnDay,
+          textAlign: 'center',
+          className: 'item-group'
+        }
+      ]
     };
   },
   methods: {
-    onSelectDate(date) {
+    isLeapYear(year) {
+      return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    },
+    dataChange(gIndex, iIndex) {
       // eslint-disable-next-line no-console
-      console.log(date);
-      this.defaultProps.value = date;
+      console.info('list', gIndex, iIndex);
+      const ciList = this.$refs.smoothPicker.getCurrentIndexList();
+      if (gIndex === 0 || gIndex === 1) {
+        // year or month changed
+        let currentIndex = 15;
+        let monthCount = 30;
+        let month = iIndex + 1; // month
+        if (gIndex === 0) {
+          // year
+          month = this.data[1].list[ciList[1]];
+        }
+        switch (month) {
+          case 2:
+            // eslint-disable-next-line no-case-declarations
+            let selectedYear = this.data[0].list[ciList[0]]; // month
+            if (gIndex === 0) {
+              // year
+              selectedYear = this.data[0].list[iIndex];
+            }
+            // eslint-disable-next-line no-case-declarations
+            let isLeapYear = false;
+            if (this.isLeapYear(selectedYear)) {
+              isLeapYear = true;
+            }
+            monthCount = 28;
+            currentIndex = 14;
+            if (isLeapYear) {
+              monthCount = 29;
+              currentIndex = 15;
+            }
+            break;
+          case 4:
+          case 6:
+          case 9:
+          case 11:
+            monthCount = 30;
+            currentIndex = 15;
+            break;
+          default:
+            monthCount = 31;
+            currentIndex = 16;
+        }
+        const list = [...Array(monthCount)].map((d, i) => i + 1);
+        this.$refs.smoothPicker.setGroupData(2, {
+          ...this.data[2],
+          ...{ currentIndex, list }
+        });
+      }
+    },
+    clickOnDay(gIndex, iIndex) {
+      window.alert('Clicked day: ' + this.data[gIndex].list[iIndex]);
+    },
+    confirm() {
+      const ciList = this.$refs.smoothPicker.getCurrentIndexList();
+      const year = this.data[0].list[ciList[0]];
+      const month = this.data[1].list[ciList[1]];
+      const day = this.data[2].list[ciList[2]];
+      window.alert(year + ' / ' + month + ' / ' + day);
     }
   }
 };
 </script>
-<style lang="less" scoped>
-.datepicker {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  width: 100%;
-  z-index: 1;
-  font-size: 16px;
-  text-align: center;
-  font-family: arial;
-  box-sizing: content-box;
-  user-select: none;
 
-  .datepicker-header {
-    padding: 0 0.5em;
-    min-height: 2em;
-    line-height: 2em;
-    font-size: 1.125em;
-  }
-  .datepicker-content {
-    display: flex;
-    padding: 0.5em 0.25em;
-  }
-  .datepicker-navbar {
-    padding: 0 0.5em 0.5em 0.5em;
-    overflow: hidden;
-  }
-  .datepicker-navbar-btn {
-    height: 2.5em;
-    line-height: 2.5em;
-    float: right;
-    padding: 0 1em;
-    cursor: pointer;
-  }
-}
+<style lang="stylus">
+body
+  background-color: #f0f0f0
+  .button
+    margin: 10px 0 0
+    background-color: black
+    color: white
+    padding: 5px
 </style>
